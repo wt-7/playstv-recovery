@@ -25,7 +25,7 @@ MAX_SCROLL_ATTEMPTS = 50
 MAX_FAIL_ATTEMPTS = 5
 
 
-def init_driver() -> webdriver.Chrome:
+def init_webdriver() -> webdriver.Chrome:
     options = ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
@@ -63,6 +63,9 @@ class ProfilePageScraper:
     def _scroll_to_end(self, driver: webdriver.Chrome) -> None:
         """Scroll until we find all videos or hit max attempts."""
 
+        fails = 0
+        prev_count = 0
+
         target_count = self._get_user_video_count(driver)
         console.print(
             Panel(
@@ -70,8 +73,6 @@ class ProfilePageScraper:
                 expand=False,
             )
         )
-        fails = 0
-        prev_count = 0
 
         with show_progress_bar() as progress:
             task = progress.add_task("Loading videos...", total=target_count)
@@ -89,7 +90,6 @@ class ProfilePageScraper:
                 progress.update(task, completed=current_count)
 
                 hit_target = target_count > 0 and current_count >= target_count
-
                 if hit_target:
                     progress.update(task, description="[green]✅ Complete!")
                     console.print(
@@ -137,9 +137,10 @@ class ProfilePageScraper:
                     )
 
     def fetch_urls(self, username: str) -> list[str]:
-        """Fetch all video URLs for a given username."""
+        """Fetch all availablevideo page URLs for a given username."""
         console.print(f"[bold blue]Fetching video URLs for {username}...[/bold blue]")
-        with init_driver() as driver:
+
+        with init_webdriver() as driver:
             driver.get(PLAYS_TV_URL + username)
             time.sleep(self.sleep_time)
 
