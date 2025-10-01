@@ -98,10 +98,10 @@ async def run(
         session=session,
         semaphore=semaphore,
         rate_limiter=rate_limiter,
-        path=user_download_path,
+        save_path=user_download_path,
     )
     cache = Cache(CACHE_PATH)
-    scraper = VideoLinkScraper()
+    scraper = VideoLinkScraper(user_agent=USER_AGENT)
 
     async def worker(url: str, live: Live):
         if url not in cache:

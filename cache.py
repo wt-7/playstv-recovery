@@ -5,6 +5,8 @@ import aiofiles
 
 
 class Cache:
+    """A persistent and async safe cache for preventing re-downloading of videos."""
+
     def __init__(self, path: Path):
         self._exclusion_list_path = path
         self._excluded_urls: Set[str] = set()

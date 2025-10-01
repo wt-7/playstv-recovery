@@ -9,6 +9,7 @@ CHUNK_SIZE = 8192
 
 
 def extract_video_source(content: bytes):
+    """Extracts the video source URL from the HTML content of a PlaysTV video page"""
     html = BeautifulSoup(content, "html.parser")
     source_tag = html.find("source", {"res": "720"})
 
@@ -18,31 +19,36 @@ def extract_video_source(content: bytes):
     return f"https:{source_tag.get('src')}"
 
 
+def url_to_filename(url: str) -> str:
+    return f"{url.split('/')[-1]}.mp4"
+
+
 class DownloadClient:
-    """Handles HTTP requests with rate limiting and concurrency control."""
+    """Client for downloading videos from PlaysTV with rate limiting and concurrency control."""
 
     def __init__(
         self,
         session: aiohttp.ClientSession,
         rate_limiter: AsyncLimiter,
         semaphore: asyncio.Semaphore,
-        path: Path,
+        save_path: Path,
     ):
         self.session = session
         self.rate_limiter = rate_limiter
         self.semaphore = semaphore
-        self.path = path
+        self.save_path = save_path
 
     async def download(self, url: str):
-        save_path = self.path / Path(f"{url.split("/")[-1]}.mp4")
+        """Download and save a PlaysTV video from a video page URL."""
+        path = self.save_path / Path(url_to_filename(url))
         page_content = await self._fetch(url)
         video_url = extract_video_source(page_content)
-        await self._download_to_file(video_url, save_path)
+        await self._download_to_file(video_url, path)
 
-        return save_path
+        return path
 
     async def _fetch(self, url: str) -> bytes:
-        """Fetch content from URL with rate limiting and concurrency control."""
+        """Fetch content from a URL"""
 
         async with self.semaphore:
             await self.rate_limiter.acquire()
@@ -52,7 +58,7 @@ class DownloadClient:
                 return await response.read()
 
     async def _download_to_file(self, url: str, path: Path) -> None:
-        """Download content from URL to file with rate limiting and concurrency control."""
+        """Download content from a URL to a file"""
 
         async with self.semaphore:
             await self.rate_limiter.acquire()

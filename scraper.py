@@ -3,52 +3,34 @@ from collections.abc import AsyncGenerator
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options as ChromeOptions
-from console import console
-from rich.progress import (
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    BarColumn,
-    MofNCompleteColumn,
-    TimeElapsedColumn,
-)
 
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-)
 WAYBACK_URL = "https://web.archive.org/web/"
 PLAYS_TV_URL = "https://web.archive.org/web/20191210043532/https://plays.tv/u/"
 
+# Maximum number of times the scraper will attempt to scroll to load more videos
 MAX_SCROLL_ATTEMPTS = 50
+
+# Maximum number of consecutive scroll attempts that yield no new videos before stopping
 MAX_FAIL_ATTEMPTS = 10
 
 
-def get_webdriver_options() -> ChromeOptions:
-    options = ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument(f"--user-agent={USER_AGENT}")
-    return options
-
-
-def show_progress_bar():
-    return Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TimeElapsedColumn(),
-        console=console,
-    )
-
-
 class VideoLinkScraper:
-    """Scrapes video URLs from plays.tv user pages."""
+    """Scrape video page links from a user's PlaysTV profile."""
 
-    def __init__(self, sleep_time: int = 4, headless: bool = False) -> None:
+    def __init__(
+        self,
+        user_agent: str,
+        sleep_time: int = 4,
+        headless: bool = False,
+    ) -> None:
         self.sleep_time = sleep_time
+        self.options = ChromeOptions()
+
+        if headless:
+            self.options.add_argument("--headless=new")
+
+        self.options.add_argument(f"--user-agent={user_agent}")
 
     def _get_user_video_count(self, driver: webdriver.Chrome) -> int:
         """Get the total number of videos listed on the user's profile."""
@@ -77,7 +59,7 @@ class VideoLinkScraper:
     async def stream_urls(self, username: str) -> AsyncGenerator[str, None]:
         """Stream video URLs as they're discovered."""
 
-        with webdriver.Chrome(options=get_webdriver_options()) as driver:
+        with webdriver.Chrome(options=self.options) as driver:
             driver.get(PLAYS_TV_URL + username)
 
             seen_urls: set[str] = set()
@@ -85,14 +67,17 @@ class VideoLinkScraper:
             target_count = self._get_user_video_count(driver)
 
             for attempt in range(1, MAX_SCROLL_ATTEMPTS + 1):
+                # Scroll to the bottom to trigger loading more videos
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
 
+                # Don't wait on the first attempt, as the webdriver will wait for the initial page load
                 if attempt != 1:
                     await asyncio.sleep(self.sleep_time)
 
                 new_urls = self._extract_new_video_urls(driver, seen_urls)
 
                 for url in new_urls:
+                    # Yield each new URL as it's found
                     yield url
 
                 seen_urls.update(new_urls)
@@ -102,12 +87,15 @@ class VideoLinkScraper:
                 no_new_videos_found = new_count == 0
 
                 if reached_target:
+                    # All of the videos have been found as per the user's video count
                     break
 
                 elif no_new_videos_found:
                     consecutive_fails += 1
-                    if consecutive_fails >= MAX_SCROLL_ATTEMPTS:
+                    if consecutive_fails >= MAX_FAIL_ATTEMPTS:
+                        # Too many consecutive scrolls with no new videos found, stop scrolling
                         break
 
                 else:
+                    # New videos were found, reset the fail counter and scroll again
                     consecutive_fails = 0
