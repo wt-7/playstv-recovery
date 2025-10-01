@@ -6,10 +6,10 @@ import aiohttp
 from aiolimiter import AsyncLimiter
 from rich.text import Text
 import argparse
-from cache import Cache
-from downloader import DownloadClient
-from scraper import VideoLinkScraper
-from console import console
+from playstv_recovery.cache import Cache
+from playstv_recovery.downloader import DownloadClient
+from playstv_recovery.scraper import VideoLinkScraper
+from playstv_recovery.console import console
 from dataclasses import dataclass, field
 from rich.table import Table
 from rich.live import Live
@@ -20,10 +20,12 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 )
+
+# Wayback Machine rate limit
 RATE_LIMIT = 14
 
-CACHE_PATH = Path("cache")
 SAVE_DIR = Path("plays-tv-videos")
+CACHE_PATH = SAVE_DIR / "cache"
 
 
 def print_logo():
@@ -126,7 +128,7 @@ async def run(
     console.print("[bold green]🎉 All downloads completed![/bold green]")
 
 
-async def main():
+async def cli():
     parser = argparse.ArgumentParser(
         description="Download plays.tv videos from Wayback Machine."
     )
@@ -157,5 +159,5 @@ async def main():
         )
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+def main():
+    asyncio.run(cli())
