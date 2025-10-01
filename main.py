@@ -23,7 +23,7 @@ USER_AGENT = (
 RATE_LIMIT = 14
 
 CACHE_PATH = Path("cache")
-SAVE_DIR = Path("out")
+SAVE_DIR = Path("plays-tv-videos")
 
 
 def print_logo():
