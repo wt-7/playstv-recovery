@@ -43,7 +43,7 @@ def print_logo():
 
 @asynccontextmanager
 async def create_session() -> AsyncIterator[aiohttp.ClientSession]:
-    """Create and manage aiohttp session."""
+    """Create and manage an aiohttp session."""
     connector = aiohttp.TCPConnector(
         ttl_dns_cache=300,
     )
@@ -101,7 +101,7 @@ async def run(
         save_path=user_download_path,
     )
     cache = Cache(CACHE_PATH)
-    scraper = VideoLinkScraper(user_agent=USER_AGENT)
+    scraper = VideoLinkScraper(user_agent=USER_AGENT, headless=not args.show_browser)
 
     async def worker(url: str, live: Live):
         if url not in cache:
@@ -131,12 +131,16 @@ async def main():
         description="Download plays.tv videos from Wayback Machine."
     )
     parser.add_argument(
-        "-u",
-        "--username",
+        "username",
         type=str,
-        required=True,
-        help="Plays.tv username to archive",
+        help="PlaysTV username to archive",
     )
+    parser.add_argument(
+        "--show-browser",
+        action="store_true",
+        help="Show the browser window (for debugging)",
+    )
+
     args = parser.parse_args()
 
     print_logo()
