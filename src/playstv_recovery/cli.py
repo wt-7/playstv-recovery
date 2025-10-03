@@ -95,6 +95,7 @@ async def run(
     stats = Stats()
     user_download_path = SAVE_DIR / str(args.username)
     user_download_path.mkdir(parents=True, exist_ok=True)
+    console.print(f"[bold]Saving videos to:[/bold] {user_download_path.resolve()}")
 
     client = DownloadClient(
         session=session,
@@ -128,7 +129,7 @@ async def run(
     console.print("[bold green]🎉 All downloads completed![/bold green]")
 
 
-async def cli():
+async def async_main():
     parser = argparse.ArgumentParser(
         description="Download plays.tv videos from Wayback Machine."
     )
@@ -160,4 +161,4 @@ async def cli():
 
 
 def main():
-    asyncio.run(cli())
+    asyncio.run(async_main())
