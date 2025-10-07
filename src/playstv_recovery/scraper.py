@@ -1,5 +1,4 @@
-import asyncio
-from collections.abc import AsyncGenerator
+import time
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -56,8 +55,8 @@ class VideoLinkScraper:
 
         return [url for url in processed_urls if url not in seen_urls]
 
-    async def stream_urls(self, username: str) -> AsyncGenerator[str, None]:
-        """Stream video URLs as they're discovered."""
+    def scrape_urls(self, username: str):
+        """Scrape video URLs from the user's PlaysTV profile."""
 
         with webdriver.Chrome(options=self.options) as driver:
             driver.get(PLAYS_TV_URL + username)
@@ -72,7 +71,7 @@ class VideoLinkScraper:
 
                 # Don't wait on the first attempt, as the webdriver will wait for the initial page load
                 if attempt != 1:
-                    await asyncio.sleep(self.sleep_time)
+                    time.sleep(self.sleep_time)
 
                 new_urls = self._extract_new_video_urls(driver, seen_urls)
 

@@ -1,54 +1,54 @@
 import asyncio
+import argparse
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable, Awaitable
+
 import aiohttp
 from aiolimiter import AsyncLimiter
 from rich.text import Text
-import argparse
+
 from playstv_recovery.cache import Cache
 from playstv_recovery.downloader import DownloadClient
 from playstv_recovery.scraper import VideoLinkScraper
 from playstv_recovery.console import console
-from dataclasses import dataclass, field
-from rich.table import Table
-from rich.live import Live
-from rich.panel import Panel
-
+from playstv_recovery.stats import DownloadStats, LiveStatsDisplay
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 )
-
-# Wayback Machine rate limit
 RATE_LIMIT = 14
-
+NUM_WORKERS = 20
 SAVE_DIR = Path("plays-tv-videos")
-CACHE_PATH = SAVE_DIR / "cache"
+CACHE_PATH = SAVE_DIR / "cache.txt"
 
 
-def print_logo():
-    text = Text(
-        """
+def print_logo() -> None:
+    logo = """
 ▗▄▄▖ █ ▗▞▀▜▌▄   ▄  ▄▄▄ ▗▄▄▄▖▗▖  ▗▖    ▗▄▄▖ ▗▞▀▚▖▗▞▀▘ ▄▄▄  ▄   ▄ ▗▞▀▚▖ ▄▄▄ ▄   ▄ 
 ▐▌ ▐▌█ ▝▚▄▟▌█   █ ▀▄▄    █  ▐▌  ▐▌    ▐▌ ▐▌▐▛▀▀▘▝▚▄▖█   █ █   █ ▐▛▀▀▘█    █   █ 
 ▐▛▀▘ █       ▀▀▀█ ▄▄▄▀   █  ▐▌  ▐▌    ▐▛▀▚▖▝▚▄▄▖    ▀▄▄▄▀  ▀▄▀  ▝▚▄▄▖█     ▀▀▀█ 
 ▐▌   █      ▄   █        █   ▝▚▞▘     ▐▌ ▐▌                               ▄   █ 
              ▀▀▀                                                           ▀▀▀  
-                                                                                
-                                                                                """,
-        style="bold cyan",
-    )
-    console.print(text)
+"""
+
+    console.print(Text(logo, style="bold cyan"))
+
+
+def create_user_directory(username: str) -> Path:
+    """Create and return the user's download directory"""
+
+    user_path = SAVE_DIR / username
+    user_path.mkdir(parents=True, exist_ok=True)
+    return user_path
 
 
 @asynccontextmanager
 async def create_session() -> AsyncIterator[aiohttp.ClientSession]:
-    """Create and manage an aiohttp session."""
-    connector = aiohttp.TCPConnector(
-        ttl_dns_cache=300,
-    )
+    """Create and manage an aiohttp ClientSession with proper configuration."""
+
+    connector = aiohttp.TCPConnector(ttl_dns_cache=300)
     timeout = aiohttp.ClientTimeout(total=300, connect=30, sock_read=60)
     headers = {"User-Agent": USER_AGENT}
 
@@ -60,78 +60,98 @@ async def create_session() -> AsyncIterator[aiohttp.ClientSession]:
         yield session
 
 
-@dataclass
-class Stats:
-    found: int = 0
-    completed: int = 0
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+async def produce_urls(
+    scraper: VideoLinkScraper, username: str, queue: asyncio.Queue, stats: DownloadStats
+) -> None:
+    """Scrape video URLs and enqueue them for downloading."""
 
-    async def inc_found(self):
-        async with self._lock:
-            self.found += 1
+    loop = asyncio.get_running_loop()
 
-    async def inc_completed(self):
-        async with self._lock:
-            self.completed += 1
+    def scrape_sync(event_loop: asyncio.AbstractEventLoop) -> None:
+        """Synchronous scraping function to run in thread."""
+
+        for url in scraper.scrape_urls(username):
+            asyncio.run_coroutine_threadsafe(stats.increment_found(), event_loop)
+            asyncio.run_coroutine_threadsafe(queue.put(url), event_loop)
+
+    await asyncio.to_thread(scrape_sync, loop)
+    await queue.put(None)  # Sentinel value
 
 
-def render_stats(stats: Stats) -> Panel:
-    """Render a rich panel with live stats."""
-    table = Table(title="Download Progress", expand=True, show_header=False, box=None)
-    table.add_row("🔎 Videos Found:", f"[cyan]{stats.found}[/cyan]")
-    table.add_row("✅ Videos Completed:", f"[green]{stats.completed}[/green]")
-    table.add_row(
-        "⏳ Remaining:", f"[yellow]{max(stats.found - stats.completed, 0)}[/yellow]"
-    )
-    return Panel(table, border_style="bold blue")
+async def consume_queue(
+    queue: asyncio.Queue,
+    process_fn: Callable[[str], Awaitable[None]],
+) -> None:
+    """Consume URLs from queue until sentinel is received."""
+
+    while True:
+        url = await queue.get()
+
+        if url is None:  # Sentinel value
+            queue.put_nowait(None)  # Propagate to other workers
+            break
+
+        try:
+            await process_fn(url)
+        finally:
+            queue.task_done()
 
 
 async def run(
-    args: argparse.Namespace,
+    username: str,
+    show_browser: bool,
     session: aiohttp.ClientSession,
     semaphore: asyncio.Semaphore,
     rate_limiter: AsyncLimiter,
-):
-    stats = Stats()
-    user_download_path = SAVE_DIR / str(args.username)
-    user_download_path.mkdir(parents=True, exist_ok=True)
-    console.print(f"[bold]Saving videos to:[/bold] {user_download_path.resolve()}")
+) -> None:
+    """Execute the complete download pipeline."""
+
+    stats = DownloadStats()
+    save_path = create_user_directory(username)
+    console.print(f"[bold]Saving videos to:[/bold] {save_path.resolve()}")
 
     client = DownloadClient(
         session=session,
         semaphore=semaphore,
         rate_limiter=rate_limiter,
-        save_path=user_download_path,
+        save_path=save_path,
     )
     cache = Cache(CACHE_PATH)
-    scraper = VideoLinkScraper(user_agent=USER_AGENT, headless=not args.show_browser)
+    scraper = VideoLinkScraper(user_agent=USER_AGENT, headless=not show_browser)
+    queue: asyncio.Queue = asyncio.Queue()
 
-    async def worker(url: str, live: Live):
-        if url not in cache:
-            await client.download(url)
+    async def download_worker(url: str) -> None:
+        if url in cache:
+            await stats.increment_skipped()
+        else:
+            path = await client.download(url)
             await cache.add(url)
-        await stats.inc_completed()
-        live.update(render_stats(stats))
+            await stats.increment_completed(str(path))
 
-    with Live(
-        render_stats(stats),
-        refresh_per_second=4,
-        console=console,
-    ) as live:
-        tasks = []
-        async for video_url in scraper.stream_urls(args.username):
-            await stats.inc_found()
-            live.update(render_stats(stats))
-            tasks.append(asyncio.create_task(worker(video_url, live)))
+    with LiveStatsDisplay(stats):
 
-        await asyncio.gather(*tasks, return_exceptions=True)
+        producer_task = asyncio.create_task(
+            produce_urls(scraper, username, queue, stats)
+        )
+
+        worker_tasks = [
+            asyncio.create_task(consume_queue(queue, download_worker))
+            for _ in range(NUM_WORKERS)
+        ]
+
+        await producer_task
+        await queue.join()
+        await asyncio.gather(*worker_tasks)
 
     console.print("[bold green]🎉 All downloads completed![/bold green]")
 
 
-async def async_main():
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+
     parser = argparse.ArgumentParser(
-        description="Download plays.tv videos from Wayback Machine."
+        description="Download plays.tv videos from Wayback Machine.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "username",
@@ -143,22 +163,29 @@ async def async_main():
         action="store_true",
         help="Show the browser window (for debugging)",
     )
+    return parser.parse_args()
 
-    args = parser.parse_args()
 
+async def async_main() -> None:
+    """Main async entry point for the application."""
+
+    args = parse_args()
     print_logo()
 
-    semaphore = asyncio.Semaphore(10)
+    semaphore = asyncio.Semaphore(NUM_WORKERS)
     rate_limiter = AsyncLimiter(RATE_LIMIT)
 
     async with create_session() as session:
         await run(
+            username=args.username,
+            show_browser=args.show_browser,
             session=session,
-            args=args,
             semaphore=semaphore,
             rate_limiter=rate_limiter,
         )
 
 
-def main():
+def main() -> None:
+    """Main entry point for the application."""
+
     asyncio.run(async_main())
