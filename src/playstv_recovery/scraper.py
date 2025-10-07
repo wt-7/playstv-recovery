@@ -1,17 +1,32 @@
 import time
+from typing import Iterator
+from dataclasses import dataclass
+from contextlib import contextmanager
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options as ChromeOptions
-
 
 WAYBACK_URL = "https://web.archive.org/web/"
 PLAYS_TV_URL = "https://web.archive.org/web/20191210043532/https://plays.tv/u/"
 
 # Maximum number of times the scraper will attempt to scroll to load more videos
 MAX_SCROLL_ATTEMPTS = 50
-
 # Maximum number of consecutive scroll attempts that yield no new videos before stopping
 MAX_FAIL_ATTEMPTS = 10
+
+
+@dataclass
+class TotalFound:
+    count: int
+
+
+@dataclass
+class UrlFound:
+    url: str
+
+
+ScrapeEvent = TotalFound | UrlFound
 
 
 class VideoLinkScraper:
@@ -24,77 +39,95 @@ class VideoLinkScraper:
         headless: bool = False,
     ) -> None:
         self.sleep_time = sleep_time
-        self.options = ChromeOptions()
+        self.user_agent = user_agent
+        self.headless = headless
 
-        if headless:
-            self.options.add_argument("--headless=new")
+    @contextmanager
+    def _get_driver(self):
+        """Context manager for Chrome webdriver."""
+        options = ChromeOptions()
+        if self.headless:
+            options.add_argument("--headless=new")
+        options.add_argument(f"--user-agent={self.user_agent}")
 
-        self.options.add_argument(f"--user-agent={user_agent}")
+        driver = webdriver.Chrome(options=options)
+        try:
+            yield driver
+        finally:
+            driver.quit()
 
     def _get_user_video_count(self, driver: webdriver.Chrome) -> int:
         """Get the total number of videos listed on the user's profile."""
-
         video_count_element = driver.find_element(
             By.CSS_SELECTOR, ".nav-tab-label span"
         )
-
         return int(video_count_element.text)
 
     def _extract_new_video_urls(
         self, driver: webdriver.Chrome, seen_urls: set[str]
     ) -> list[str]:
         """Extract video URLs that haven't been seen before."""
-
         elements = driver.find_elements(
             By.CSS_SELECTOR, ".bd .video-list-container a.title"
         )
 
-        hrefs = (element.get_attribute("href") for element in elements)
-        valid_hrefs = filter(None, hrefs)
-        processed_urls = (WAYBACK_URL + href.split("?")[0] for href in valid_hrefs)
+        new_urls = []
+        for element in elements:
+            if href := element.get_attribute("href"):
+                # Strip query parameters and prepend Wayback URL
+                url = f"{WAYBACK_URL}{href.split('?')[0]}"
+                if url not in seen_urls:
+                    new_urls.append(url)
 
-        return [url for url in processed_urls if url not in seen_urls]
+        return new_urls
 
-    def scrape_urls(self, username: str):
-        """Scrape video URLs from the user's PlaysTV profile."""
+    def _scroll_to_bottom(self, driver: webdriver.Chrome) -> None:
+        """Scroll to the bottom of the page."""
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
 
-        with webdriver.Chrome(options=self.options) as driver:
-            driver.get(PLAYS_TV_URL + username)
+    def _should_stop_scrolling(
+        self, seen_count: int, target_count: int, consecutive_fails: int
+    ) -> bool:
+        """Determine if scrolling should stop."""
+        reached_target = target_count > 0 and seen_count >= target_count
+        too_many_fails = consecutive_fails >= MAX_FAIL_ATTEMPTS
+        return reached_target or too_many_fails
+
+    def scrape_urls(self, username: str) -> Iterator[ScrapeEvent]:
+        """
+        Scrape video URLs from the specified user's profile.
+
+        Yields:
+            ScrapeEvent: TotalFound event followed by UrlFound events for each video.
+        """
+        with self._get_driver() as driver:
+            driver.get(f"{PLAYS_TV_URL}{username}")
 
             seen_urls: set[str] = set()
             consecutive_fails = 0
             target_count = self._get_user_video_count(driver)
 
-            for attempt in range(1, MAX_SCROLL_ATTEMPTS + 1):
-                # Scroll to the bottom to trigger loading more videos
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            # Inform the caller of the total number of videos to expect
+            yield TotalFound(count=target_count)
 
-                # Don't wait on the first attempt, as the webdriver will wait for the initial page load
-                if attempt != 1:
+            for attempt in range(1, MAX_SCROLL_ATTEMPTS + 1):
+                self._scroll_to_bottom(driver)
+
+                # Don't wait on the first attempt, as webdriver waits for initial page load
+                if attempt > 1:
                     time.sleep(self.sleep_time)
 
                 new_urls = self._extract_new_video_urls(driver, seen_urls)
 
-                for url in new_urls:
-                    # Yield each new URL as it's found
-                    yield url
+                # Yield each new URL as it's found
+                yield from (UrlFound(url=url) for url in new_urls)
 
                 seen_urls.update(new_urls)
-                new_count = len(new_urls)
 
-                reached_target = target_count > 0 and len(seen_urls) >= target_count
-                no_new_videos_found = new_count == 0
-
-                if reached_target:
-                    # All of the videos have been found as per the user's video count
+                if self._should_stop_scrolling(
+                    len(seen_urls), target_count, consecutive_fails
+                ):
                     break
 
-                elif no_new_videos_found:
-                    consecutive_fails += 1
-                    if consecutive_fails >= MAX_FAIL_ATTEMPTS:
-                        # Too many consecutive scrolls with no new videos found, stop scrolling
-                        break
-
-                else:
-                    # New videos were found, reset the fail counter and scroll again
-                    consecutive_fails = 0
+                # Update consecutive fails counter
+                consecutive_fails = consecutive_fails + 1 if not new_urls else 0

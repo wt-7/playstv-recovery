@@ -10,9 +10,9 @@ from rich.text import Text
 
 from playstv_recovery.cache import Cache
 from playstv_recovery.downloader import DownloadClient
-from playstv_recovery.scraper import VideoLinkScraper
+from playstv_recovery.scraper import TotalFound, UrlFound, VideoLinkScraper
 from playstv_recovery.console import console
-from playstv_recovery.stats import DownloadStats, LiveStatsDisplay
+from playstv_recovery.stats import DownloadStats, LiveStatsDisplay, print_report
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -70,9 +70,15 @@ async def produce_urls(
     def scrape_sync(event_loop: asyncio.AbstractEventLoop) -> None:
         """Synchronous scraping function to run in thread."""
 
-        for url in scraper.scrape_urls(username):
-            asyncio.run_coroutine_threadsafe(stats.increment_found(), event_loop)
-            asyncio.run_coroutine_threadsafe(queue.put(url), event_loop)
+        for event in scraper.scrape_urls(username):
+            match event:
+                case TotalFound(total):
+                    asyncio.run_coroutine_threadsafe(stats.set_total(total), event_loop)
+                case UrlFound(url):
+                    asyncio.run_coroutine_threadsafe(
+                        stats.increment_found(), event_loop
+                    )
+                    asyncio.run_coroutine_threadsafe(queue.put(url), event_loop)
 
     await asyncio.to_thread(scrape_sync, loop)
     await queue.put(None)  # Sentinel value
@@ -88,6 +94,7 @@ async def consume_queue(
         url = await queue.get()
 
         if url is None:  # Sentinel value
+            queue.task_done()
             queue.put_nowait(None)  # Propagate to other workers
             break
 
@@ -123,10 +130,15 @@ async def run(
     async def download_worker(url: str) -> None:
         if url in cache:
             await stats.increment_skipped()
-        else:
+            return
+        try:
             path = await client.download(url)
             await cache.add(url)
-            await stats.increment_completed(str(path))
+            await stats.increment_completed(path.name)
+
+        except Exception as e:
+            await stats.increment_failed()
+            console.print(f"[red]Error downloading {url}: {e}[/red]")
 
     with LiveStatsDisplay(stats):
 
@@ -141,9 +153,9 @@ async def run(
 
         await producer_task
         await queue.join()
-        await asyncio.gather(*worker_tasks)
+        await asyncio.gather(*worker_tasks, return_exceptions=True)
 
-    console.print("[bold green]🎉 All downloads completed![/bold green]")
+    print_report(stats)
 
 
 def parse_args() -> argparse.Namespace:
