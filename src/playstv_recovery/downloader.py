@@ -10,6 +10,7 @@ CHUNK_SIZE = 8192
 
 def extract_video_source(content: bytes):
     """Extracts the video source URL from the HTML content of a PlaysTV video page"""
+
     html = BeautifulSoup(content, "html.parser")
     source_tag = html.find("source", {"res": "720"})
 
@@ -20,7 +21,8 @@ def extract_video_source(content: bytes):
 
 
 def url_to_filename(url: str) -> str:
-    return f"{url.split('/')[-1]}.mp4"
+    parts = url.split("/")
+    return f"{parts[-1]}_{parts[-2]}.mp4"
 
 
 class DownloadClient:
@@ -40,6 +42,7 @@ class DownloadClient:
 
     async def download(self, url: str):
         """Download and save a PlaysTV video from a video page URL."""
+
         path = self.save_path / Path(url_to_filename(url))
         page_content = await self._fetch(url)
         video_url = extract_video_source(page_content)
