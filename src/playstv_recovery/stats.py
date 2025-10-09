@@ -128,20 +128,47 @@ class LiveStatsDisplay:
 
 
 def print_report(stats: DownloadStats) -> None:
-    successful = stats.total == stats.completed + stats.skipped
-    scraper_failed = stats.total != stats.found
+    """Print a comprehensive report of download statistics."""
+    console.print("\n[bold]Download Summary[/bold]")
+    console.print("=" * 50)
 
-    if successful:
+    # Overview statistics
+    console.print(f"\nTotal videos listed: {stats.total}")
+    console.print(f"Videos found: {stats.found}")
+    console.print(f"Successfully downloaded: [green]{stats.completed}[/green]")
+    console.print(f"Skipped (already exist): [dim]{stats.skipped}[/dim]")
+    console.print(f"Failed: [red]{stats.failed}[/red]")
+
+    # Calculate derived metrics
+    processed = stats.completed + stats.skipped + stats.failed
+    success_rate = (stats.completed / stats.found * 100) if stats.found > 0 else 0
+
+    # Status determination
+    console.print("\n[bold]Status:[/bold]")
+
+    # Check for scraper issues first (most critical)
+    if stats.found < stats.total:
+        missing = stats.total - stats.found
         console.print(
-            f"[bold green]Success:[/bold green] All {stats.total} videos downloaded or skipped."
+            f"[bold yellow]⚠ Warning:[/bold yellow] Scraper only found {stats.found}/{stats.total} videos "
+            f"({missing} missing). Some videos may not have been discovered."
         )
 
-    else:
+    # Check download completion
+    if stats.failed == 0 and processed == stats.found:
+        if stats.completed == stats.found:
+            console.print(
+                f"[bold green]✓ Complete:[/bold green] All {stats.found} videos downloaded successfully."
+            )
+        else:
+            console.print(
+                f"[bold green]✓ Complete:[/bold green] All {stats.found} videos processed "
+                f"({stats.completed} downloaded, {stats.skipped} already existed)."
+            )
+    elif stats.failed > 0:
         console.print(
-            f"[bold red]Failure:[/bold red] Only {stats.completed} of {stats.total} videos downloaded successfully, with {stats.failed} failures and {stats.skipped} skipped."
+            f"[bold red]✗ Incomplete:[/bold red] {stats.failed} download(s) failed. "
+            f"Success rate: {success_rate:.1f}%"
         )
 
-    if scraper_failed:
-        console.print(
-            f"[red]Warning:[/red] Scraper found {stats.found} videos, but expected {stats.total}. Some videos may not have been found."
-        )
+    console.rule()
